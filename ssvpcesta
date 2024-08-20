@@ -1,0 +1,296 @@
+import psycopg2
+from datetime import datetime
+
+def get_connection():
+    """Estabelece uma conexão com o banco de dados PostgreSQL."""
+    return psycopg2.connect(
+        dbname="postgres",  # Substitua pelo nome do seu banco de dados
+        user="postgres",    # Substitua pelo seu nome de usuário
+        password="admin",   # Substitua pela sua senha
+        host="localhost",   # Substitua pelo host correto (localhost ou outro)
+        port="5432"         # Substitua pela porta correta (5432 é a padrão)
+    )
+
+def init_database():
+    """Inicializa o banco de dados criando as tabelas necessárias."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Criação da tabela pessoa_responsavel
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pessoa_responsavel (
+                    id SERIAL PRIMARY KEY,
+                    nome VARCHAR(255) NOT NULL,
+                    cpf VARCHAR(14) UNIQUE NOT NULL,
+                    contato VARCHAR(20) NOT NULL,
+                    data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Criação da tabela pessoa
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pessoa (
+                    id SERIAL PRIMARY KEY,
+                    nome VARCHAR(255) NOT NULL,
+                    endereco TEXT NOT NULL,
+                    num_membros INT NOT NULL,
+                    cpf VARCHAR(14) NOT NULL,
+                    contato VARCHAR(20),
+                    id_responsavel INT REFERENCES pessoa_responsavel(id),
+                    data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    data_distribuicao TIMESTAMP,
+                    cestas_recebidas INT DEFAULT 0,
+                    alimentos_distribuidos TEXT
+                );
+            """)
+
+            # Criação da tabela de estoque
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS estoque (
+                    id SERIAL PRIMARY KEY,
+                    alimento VARCHAR(255) NOT NULL,
+                    quantidade INT NOT NULL
+                );
+            """)
+
+            # Criação da tabela distribuicao_cestas
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS distribuicao_cestas (
+                    id SERIAL PRIMARY KEY,
+                    pessoa_id INT REFERENCES pessoa(id),
+                    data_distribuicao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    alimentos TEXT NOT NULL
+                );
+            """)
+
+        conn.commit()
+    except Exception as e:
+        print("Erro ao inicializar o banco de dados:", e)
+        conn.rollback()
+    finally:
+        conn.close()
+
+def adicionar_coluna_se_nao_existir(conn, tabela, coluna, tipo):
+    """Adiciona uma coluna a uma tabela se ela não existir."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"ALTER TABLE {tabela} ADD COLUMN IF NOT EXISTS {coluna} {tipo};")
+        conn.commit()
+        print(f"Coluna '{coluna}' adicionada à tabela '{tabela}' com sucesso!")
+    except Exception as e:
+        print(f"Erro ao adicionar a coluna '{coluna}' à tabela '{tabela}':", e)
+        conn.rollback()
+
+def adicionar_colunas_faltantes():
+    """Adiciona as colunas cestas_recebidas e alimentos_distribuidos na tabela pessoa, se não existirem."""
+    conn = get_connection()
+    try:
+        adicionar_coluna_se_nao_existir(conn, 'pessoa', 'cestas_recebidas', 'INT DEFAULT 0')
+        adicionar_coluna_se_nao_existir(conn, 'pessoa', 'alimentos_distribuidos', 'TEXT')
+    finally:
+        conn.close()
+
+def registrar_pessoa_responsavel(conn):
+    """Registra uma nova pessoa responsável no banco de dados, se não existir um com o mesmo CPF."""
+    nome = input("Digite o nome do responsável: ")
+    cpf = input("Digite o CPF do responsável: ")
+    contato = input("Digite o contato do responsável: ")
+
+    try:
+        with conn.cursor() as cursor:
+            # Verifica se o responsável já está registrado
+            cursor.execute("SELECT id FROM pessoa_responsavel WHERE cpf = %s", (cpf,))
+            existing_responsavel = cursor.fetchone()
+
+            if existing_responsavel:
+                return existing_responsavel[0]
+
+            cursor.execute(
+                "INSERT INTO pessoa_responsavel (nome, cpf, contato) VALUES (%s, %s, %s) RETURNING id",
+                (nome, cpf, contato)
+            )
+            id_responsavel = cursor.fetchone()[0]
+            conn.commit()
+            print(f"Responsável {nome} registrado com sucesso com ID {id_responsavel}!")
+            return id_responsavel
+    except Exception as e:
+        print("Erro ao registrar responsável:", e)
+        conn.rollback()
+        return None
+
+def listar_pessoa_responsavel(conn):
+    """Lista todas as pessoas responsáveis registradas no banco de dados."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, nome, cpf, contato, data_registro
+                FROM pessoa_responsavel
+            """)
+            responsaveis = cursor.fetchall()
+            print("\nPessoas Responsáveis Registradas:")
+            for responsavel in responsaveis:
+                print(f"ID: {responsavel[0]}, Nome: {responsavel[1]}, CPF: {responsavel[2]}, Contato: {responsavel[3]}, Data Registro: {responsavel[4]}")
+                print()
+    except Exception as e:
+        print("Erro ao listar pessoas responsáveis:", e)
+
+def registrar_pessoa(conn):
+    """Registra uma nova pessoa no banco de dados."""
+    nome = input("Digite o nome: ")
+    endereco = input("Digite o endereço: ")
+    num_membros = input("Digite o número de membros da família: ")
+    cpf = input("Digite o CPF: ")
+    contato = input("Digite o contato: ")
+
+    id_responsavel = registrar_pessoa_responsavel(conn)
+    if id_responsavel is None:
+        print("Erro ao registrar a pessoa. Tente novamente.")
+        return
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO pessoa (nome, endereco, num_membros, cpf, contato, id_responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                (nome, endereco, num_membros, cpf, contato, id_responsavel)
+            )
+            conn.commit()
+            print(f"{nome} foi registrado com sucesso!")
+    except Exception as e:
+        print("Erro ao registrar a pessoa:", e)
+        conn.rollback()
+
+def listar_pessoas(conn):
+    """Lista todas as pessoas registradas no banco de dados."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT p.id, p.nome, p.endereco, p.num_membros, p.cpf, p.contato, p.data_registro, p.data_distribuicao, p.cestas_recebidas, p.alimentos_distribuidos,
+                       r.nome AS nome_responsavel, r.cpf AS cpf_responsavel, r.contato AS contato_responsavel
+                FROM pessoa p
+                LEFT JOIN pessoa_responsavel r ON p.id_responsavel = r.id
+            """)
+            pessoas = cursor.fetchall()
+            print("\nPessoas registradas:")
+            for pessoa in pessoas:
+                print(f"ID: {pessoa[0]}, Nome: {pessoa[1]}, Endereço: {pessoa[2]}, Membros da Família: {pessoa[3]}")
+                print(f"CPF: {pessoa[4]}, Contato: {pessoa[5]}")
+                print(f"Responsável: {pessoa[10]} (CPF: {pessoa[11]}, Contato: {pessoa[12]})")
+                print(f"Data Registro: {pessoa[6]}, Data Distribuição: {pessoa[7]}, Cestas Recebidas: {pessoa[8]}")
+                print(f"Alimentos Distribuídos: {pessoa[9]}")
+                print()
+    except Exception as e:
+        print("Erro ao listar pessoas:", e)
+
+def registrar_alimento(conn):
+    """Registra novos alimentos no estoque."""
+    alimento = input("Digite o nome do alimento: ")
+    quantidade = int(input("Digite a quantidade do alimento: "))
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO estoque (alimento, quantidade)
+                VALUES (%s, %s)
+                ON CONFLICT (alimento) DO UPDATE SET quantidade = estoque.quantidade + EXCLUDED.quantidade;
+            """, (alimento, quantidade))
+            conn.commit()
+            print(f"{quantidade} unidades de {alimento} foram adicionadas ao estoque.")
+    except Exception as e:
+        print("Erro ao adicionar item ao estoque:", e)
+        conn.rollback()
+
+def listar_estoque(conn):
+    """Lista o estoque atual de alimentos."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM estoque")
+            estoque = cursor.fetchall()
+            print("\nEstoque atual:")
+            for row in estoque:
+                print(f"{row[1]}: {row[2]}")
+    except Exception as e:
+        print("Erro ao listar o estoque:", e)
+
+def distribuir_cesta(conn):
+    """Distribui uma cesta básica para uma pessoa cadastrada."""
+    listar_pessoas(conn)
+    pessoa_id = int(input("Digite o ID da pessoa que irá receber a cesta: "))
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id, alimento, quantidade FROM estoque")
+            estoque = cursor.fetchall()
+
+            alimentos_disponiveis = {item[1]: item[2] for item in estoque if item[2] > 0}
+            alimentos_distribuidos = []
+
+            if alimentos_disponiveis:
+                for alimento, quantidade in alimentos_disponiveis.items():
+                    print(f"{alimento}: {quantidade} unidades disponíveis")
+                    qtde_para_distribuir = int(input(f"Quantas unidades de {alimento} deseja distribuir? "))
+                    if qtde_para_distribuir > 0 and qtde_para_distribuir <= quantidade:
+                        alimentos_distribuidos.append(alimento)
+                        cursor.execute("UPDATE estoque SET quantidade = quantidade - %s WHERE alimento = %s", (qtde_para_distribuir, alimento))
+                    else:
+                        print(f"Quantidade inválida para {alimento}. Nenhuma unidade será distribuída.")
+
+            if alimentos_distribuidos:
+                cursor.execute("""
+                    UPDATE pessoa
+                    SET cestas_recebidas = cestas_recebidas + 1,
+                        data_distribuicao = CURRENT_TIMESTAMP,
+                        alimentos_distribuidos = %s
+                    WHERE id = %s
+                """, (', '.join(alimentos_distribuidos), pessoa_id))
+
+                cursor.execute("""
+                    INSERT INTO distribuicao_cestas (pessoa_id, alimentos)
+                    VALUES (%s, %s)
+                """, (pessoa_id, ', '.join(alimentos_distribuidos)))
+
+                conn.commit()
+                print(f"Cesta básica distribuída para a pessoa com ID {pessoa_id}.")
+            else:
+                print("Nenhum alimento foi distribuído. Verifique o estoque.")
+    except Exception as e:
+        print("Erro ao distribuir a cesta básica:", e)
+        conn.rollback()
+
+def main():
+    """Função principal que inicializa o banco e oferece as opções para o usuário."""
+    init_database()
+    adicionar_colunas_faltantes()
+
+    conn = get_connection()
+    try:
+        while True:
+            print("\n===== Sistema de Cestas Básicas =====")
+            print("1. Registrar nova pessoa")
+            print("2. Listar pessoas registradas")
+            print("3. Registrar novos alimentos no estoque")
+            print("4. Listar estoque de alimentos")
+            print("5. Distribuir cesta básica")
+            print("0. Sair")
+            opcao = input("Escolha uma opção: ")
+
+            if opcao == '1':
+                registrar_pessoa(conn)
+            elif opcao == '2':
+                listar_pessoas(conn)
+            elif opcao == '3':
+                registrar_alimento(conn)
+            elif opcao == '4':
+                listar_estoque(conn)
+            elif opcao == '5':
+                distribuir_cesta(conn)
+            elif opcao == '0':
+                print("Saindo do sistema.")
+                break
+            else:
+                print("Opção inválida! Tente novamente.")
+    finally:
+        conn.close()
+
+if __name__ == "__main__":
+    main()
+input("Pressione Enter para sair...")0
